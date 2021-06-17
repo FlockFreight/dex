@@ -172,7 +172,7 @@ func (s *Server) refreshWithConnector(ctx context.Context, token *internal.Refre
 
 	// user's token was previously updated by a connector and is allowed to reuse
 	// it is excessive to refresh identity in upstream
-	if s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed) && token.Token == refresh.ObsoleteToken {
+	if s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed) && (!s.refreshTokenPolicy.RotationEnabled() || token.Token == refresh.ObsoleteToken) {
 		return ident, nil
 	}
 
@@ -226,6 +226,12 @@ func (s *Server) updateRefreshToken(token *internal.RefreshToken, refresh *stora
 	}
 
 	lastUsed := s.now()
+	// If rotation is disabled, don't update last used time if we are within
+	// reuse interval. This will make reuse interval work as a caching window for
+	// upstream claims. Claims will only be updated every reuse interval.
+	if !s.refreshTokenPolicy.RotationEnabled() && s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed) {
+		lastUsed = refresh.LastUsed
+	}
 
 	rerr := s.updateOfflineSession(refresh, ident, lastUsed)
 	if rerr != nil {
