@@ -172,7 +172,7 @@ func (s *Server) refreshWithConnector(ctx context.Context, token *internal.Refre
 
 	// user's token was previously updated by a connector and is allowed to reuse
 	// it is excessive to refresh identity in upstream
-	if s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed) && (!s.refreshTokenPolicy.RotationEnabled() || token.Token == refresh.ObsoleteToken) {
+	if s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed) {
 		return ident, nil
 	}
 
