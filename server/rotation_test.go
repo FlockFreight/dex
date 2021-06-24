@@ -115,14 +115,14 @@ func TestRefreshTokenPolicy(t *testing.T) {
 
 	t.Run("Allowed", func(t *testing.T) {
 		r.now = func() time.Time { return lastTime }
-		require.Equal(t, true, r.AllowedToReuse(lastTime))
+		require.Equal(t, true, r.AllowedToReuse(lastTime, r.now()))
 		require.Equal(t, false, r.ExpiredBecauseUnused(lastTime))
 		require.Equal(t, false, r.CompletelyExpired(lastTime))
 	})
 
 	t.Run("Expired", func(t *testing.T) {
 		r.now = func() time.Time { return lastTime.Add(2 * time.Minute) }
-		require.Equal(t, false, r.AllowedToReuse(lastTime))
+		require.Equal(t, false, r.AllowedToReuse(lastTime, r.now()))
 		require.Equal(t, true, r.ExpiredBecauseUnused(lastTime))
 		require.Equal(t, true, r.CompletelyExpired(lastTime))
 	})

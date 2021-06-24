@@ -75,9 +75,8 @@ type refreshContext struct {
 }
 
 // getRefreshTokenFromStorage checks that refresh token is valid and exists in the storage and gets its info
-func (s *Server) getRefreshTokenFromStorage(clientID string, token *internal.RefreshToken) (*refreshContext, *refreshError) {
+func (s *Server) getRefreshTokenFromStorage(clientID string, token *internal.RefreshToken, now time.Time) (*refreshContext, *refreshError) {
 	refreshCtx := refreshContext{requestToken: token}
-
 	invalidErr := newBadRequestError("Refresh token is invalid or has already been claimed by another client.")
 
 	// Get RefreshToken
@@ -99,7 +98,7 @@ func (s *Server) getRefreshTokenFromStorage(clientID string, token *internal.Ref
 
 	if refresh.Token != token.Token {
 		switch {
-		case !s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed):
+		case !s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed, now):
 			fallthrough
 		case refresh.ObsoleteToken != token.Token:
 			fallthrough
@@ -179,7 +178,7 @@ func (s *Server) getRefreshScopes(r *http.Request, refresh *storage.RefreshToken
 	return requestedScopes, nil
 }
 
-func (s *Server) refreshWithConnector(ctx context.Context, rCtx *refreshContext, ident connector.Identity) (connector.Identity, *refreshError) {
+func (s *Server) refreshWithConnector(ctx context.Context, rCtx *refreshContext, ident connector.Identity, now time.Time) (connector.Identity, *refreshError) {
 	// Can the connector refresh the identity? If so, attempt to refresh the data
 	// in the connector.
 	//
@@ -228,7 +227,7 @@ func (s *Server) updateOfflineSession(refresh *storage.RefreshToken, ident conne
 }
 
 // updateRefreshToken updates refresh token and offline session in the storage
-func (s *Server) updateRefreshToken(ctx context.Context, rCtx *refreshContext) (*internal.RefreshToken, connector.Identity, *refreshError) {
+func (s *Server) updateRefreshToken(ctx context.Context, rCtx *refreshContext, now time.Time) (*internal.RefreshToken, connector.Identity, *refreshError) {
 	var rerr *refreshError
 
 	newToken := &internal.RefreshToken{
@@ -236,7 +235,7 @@ func (s *Server) updateRefreshToken(ctx context.Context, rCtx *refreshContext) (
 		RefreshId: rCtx.requestToken.RefreshId,
 	}
 
-	lastUsed := s.now()
+	lastUsed := now
 
 	ident := connector.Identity{
 		UserID:            rCtx.storageToken.Claims.UserID,
@@ -250,7 +249,7 @@ func (s *Server) updateRefreshToken(ctx context.Context, rCtx *refreshContext) (
 
 	refreshTokenUpdater := func(old storage.RefreshToken) (storage.RefreshToken, error) {
 		rotationEnabled := s.refreshTokenPolicy.RotationEnabled()
-		reusingAllowed := s.refreshTokenPolicy.AllowedToReuse(old.LastUsed)
+		reusingAllowed := s.refreshTokenPolicy.AllowedToReuse(old.LastUsed, now)
 
 		switch {
 		case !rotationEnabled && reusingAllowed:
@@ -291,7 +290,7 @@ func (s *Server) updateRefreshToken(ctx context.Context, rCtx *refreshContext) (
 		// Call  only once if there is a request which is not in the reuse interval.
 		// This is required to avoid multiple calls to the external IdP for concurrent requests.
 		// Dex will call the connector's Refresh method only once if request is not in reuse interval.
-		ident, rerr = s.refreshWithConnector(ctx, rCtx, ident)
+		ident, rerr = s.refreshWithConnector(ctx, rCtx, ident, now)
 		if rerr != nil {
 			return old, rerr
 		}
@@ -326,13 +325,14 @@ func (s *Server) updateRefreshToken(ctx context.Context, rCtx *refreshContext) (
 // handleRefreshToken handles a refresh token request https://tools.ietf.org/html/rfc6749#section-6
 // this method is the entrypoint for refresh tokens handling
 func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request, client storage.Client) {
+	now := time.Now()
 	token, rerr := s.extractRefreshTokenFromRequest(r)
 	if rerr != nil {
 		s.refreshTokenErrHelper(w, rerr)
 		return
 	}
 
-	rCtx, rerr := s.getRefreshTokenFromStorage(client.ID, token)
+	rCtx, rerr := s.getRefreshTokenFromStorage(client.ID, token, now)
 	if rerr != nil {
 		s.refreshTokenErrHelper(w, rerr)
 		return
@@ -344,7 +344,7 @@ func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request, clie
 		return
 	}
 
-	newToken, ident, rerr := s.updateRefreshToken(r.Context(), rCtx)
+	newToken, ident, rerr := s.updateRefreshToken(r.Context(), rCtx, now)
 	if rerr != nil {
 		s.refreshTokenErrHelper(w, rerr)
 		return
