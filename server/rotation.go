@@ -241,9 +241,9 @@ func (r *RefreshTokenPolicy) ExpiredBecauseUnused(lastUsed time.Time) bool {
 	return r.now().After(lastUsed.Add(r.validIfNotUsedFor))
 }
 
-func (r *RefreshTokenPolicy) AllowedToReuse(lastUsed time.Time) bool {
+func (r *RefreshTokenPolicy) AllowedToReuse(lastUsed, now time.Time) bool {
 	if r.reuseInterval == 0 {
 		return false // expiration disabled
 	}
-	return !r.now().After(lastUsed.Add(r.reuseInterval))
+	return !now.After(lastUsed.Add(r.reuseInterval))
 }

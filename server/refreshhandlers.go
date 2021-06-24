@@ -61,7 +61,7 @@ func (s *Server) extractRefreshTokenFromRequest(r *http.Request) (*internal.Refr
 }
 
 // getRefreshTokenFromStorage checks that refresh token is valid and exists in the storage and gets its info
-func (s *Server) getRefreshTokenFromStorage(clientID string, token *internal.RefreshToken) (*storage.RefreshToken, *refreshError) {
+func (s *Server) getRefreshTokenFromStorage(clientID string, token *internal.RefreshToken, now time.Time) (*storage.RefreshToken, *refreshError) {
 	invalidErr := newBadRequestError("Refresh token is invalid or has already been claimed by another client.")
 
 	refresh, err := s.storage.GetRefresh(token.RefreshId)
@@ -81,7 +81,7 @@ func (s *Server) getRefreshTokenFromStorage(clientID string, token *internal.Ref
 
 	if refresh.Token != token.Token {
 		switch {
-		case !s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed):
+		case !s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed, now):
 			fallthrough
 		case refresh.ObsoleteToken != token.Token:
 			fallthrough
@@ -137,7 +137,7 @@ func (s *Server) getRefreshScopes(r *http.Request, refresh *storage.RefreshToken
 	return requestedScopes, nil
 }
 
-func (s *Server) refreshWithConnector(ctx context.Context, token *internal.RefreshToken, refresh *storage.RefreshToken, scopes []string) (connector.Identity, *refreshError) {
+func (s *Server) refreshWithConnector(ctx context.Context, token *internal.RefreshToken, refresh *storage.RefreshToken, scopes []string, now time.Time) (connector.Identity, *refreshError) {
 	var connectorData []byte
 
 	session, err := s.storage.GetOfflineSessions(refresh.Claims.UserID, refresh.ConnectorID)
@@ -172,9 +172,10 @@ func (s *Server) refreshWithConnector(ctx context.Context, token *internal.Refre
 
 	// user's token was previously updated by a connector and is allowed to reuse
 	// it is excessive to refresh identity in upstream
-	if s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed) {
+	if s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed, now) {
 		return ident, nil
 	}
+	s.logger.Debugf("refreshing claims for %s", ident.Email)
 
 	// Can the connector refresh the identity? If so, attempt to refresh the data
 	// in the connector.
@@ -216,7 +217,7 @@ func (s *Server) updateOfflineSession(refresh *storage.RefreshToken, ident conne
 }
 
 // updateRefreshToken updates refresh token and offline session in the storage
-func (s *Server) updateRefreshToken(token *internal.RefreshToken, refresh *storage.RefreshToken, ident connector.Identity) (*internal.RefreshToken, *refreshError) {
+func (s *Server) updateRefreshToken(token *internal.RefreshToken, refresh *storage.RefreshToken, ident connector.Identity, now time.Time) (*internal.RefreshToken, *refreshError) {
 	newToken := token
 	if s.refreshTokenPolicy.RotationEnabled() {
 		newToken = &internal.RefreshToken{
@@ -225,13 +226,7 @@ func (s *Server) updateRefreshToken(token *internal.RefreshToken, refresh *stora
 		}
 	}
 
-	lastUsed := s.now()
-	// If rotation is disabled, don't update last used time if we are within
-	// reuse interval. This will make reuse interval work as a caching window for
-	// upstream claims. Claims will only be updated every reuse interval.
-	if !s.refreshTokenPolicy.RotationEnabled() && s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed) {
-		lastUsed = refresh.LastUsed
-	}
+	lastUsed := now
 
 	rerr := s.updateOfflineSession(refresh, ident, lastUsed)
 	if rerr != nil {
@@ -241,7 +236,7 @@ func (s *Server) updateRefreshToken(token *internal.RefreshToken, refresh *stora
 	refreshTokenUpdater := func(old storage.RefreshToken) (storage.RefreshToken, error) {
 		if s.refreshTokenPolicy.RotationEnabled() {
 			if old.Token != token.Token {
-				if s.refreshTokenPolicy.AllowedToReuse(old.LastUsed) && old.ObsoleteToken == token.Token {
+				if s.refreshTokenPolicy.AllowedToReuse(old.LastUsed, now) && old.ObsoleteToken == token.Token {
 					newToken.Token = old.Token
 					return old, nil
 				}
@@ -280,13 +275,14 @@ func (s *Server) updateRefreshToken(token *internal.RefreshToken, refresh *stora
 // handleRefreshToken handles a refresh token request https://tools.ietf.org/html/rfc6749#section-6
 // this method is the entrypoint for refresh tokens handling
 func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request, client storage.Client) {
+	now := time.Now()
 	token, rerr := s.extractRefreshTokenFromRequest(r)
 	if rerr != nil {
 		s.refreshTokenErrHelper(w, rerr)
 		return
 	}
 
-	refresh, rerr := s.getRefreshTokenFromStorage(client.ID, token)
+	refresh, rerr := s.getRefreshTokenFromStorage(client.ID, token, now)
 	if rerr != nil {
 		s.refreshTokenErrHelper(w, rerr)
 		return
@@ -298,7 +294,7 @@ func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request, clie
 		return
 	}
 
-	ident, rerr := s.refreshWithConnector(r.Context(), token, refresh, scopes)
+	ident, rerr := s.refreshWithConnector(r.Context(), token, refresh, scopes, now)
 	if rerr != nil {
 		s.refreshTokenErrHelper(w, rerr)
 		return
@@ -327,10 +323,16 @@ func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request, clie
 		return
 	}
 
-	newToken, rerr := s.updateRefreshToken(token, refresh, ident)
-	if rerr != nil {
-		s.refreshTokenErrHelper(w, rerr)
-		return
+	// If rotation is disabled, don't update last used time if we are within
+	// reuse interval. This will make reuse interval work as a caching window for
+	// upstream claims. Claims will only be updated every reuse interval.
+	newToken := token
+	if s.refreshTokenPolicy.RotationEnabled() || !s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed, now) {
+		newToken, rerr = s.updateRefreshToken(token, refresh, ident, now)
+		if rerr != nil {
+			s.refreshTokenErrHelper(w, rerr)
+			return
+		}
 	}
 
 	rawNewToken, err := internal.Marshal(newToken)
