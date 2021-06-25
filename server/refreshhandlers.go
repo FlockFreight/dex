@@ -175,7 +175,6 @@ func (s *Server) refreshWithConnector(ctx context.Context, token *internal.Refre
 	if s.refreshTokenPolicy.AllowedToReuse(refresh.LastUsed, now) {
 		return ident, nil
 	}
-	s.logger.Debugf("refreshing claims for %s", ident.Email)
 
 	// Can the connector refresh the identity? If so, attempt to refresh the data
 	// in the connector.
