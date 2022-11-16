@@ -238,6 +238,7 @@ func (c *oidcConnector) HandleCallback(s connector.Scopes, r *http.Request) (ide
 	if errType := q.Get("error"); errType != "" {
 		return identity, &oauth2Error{errType, q.Get("error_description")}
 	}
+	defer func() { c.logger.Infof("exchanging code for %s", identity.Email) }()
 	token, err := c.oauth2Config.Exchange(r.Context(), q.Get("code"))
 	if err != nil {
 		return identity, fmt.Errorf("oidc: failed to get token: %v", err)
@@ -257,6 +258,8 @@ func (c *oidcConnector) Refresh(ctx context.Context, s connector.Scopes, identit
 		RefreshToken: string(cd.RefreshToken),
 		Expiry:       time.Now().Add(-time.Hour),
 	}
+
+	defer func() { c.logger.Infof("refreshed claims for %s", identity.Email) }()
 	token, err := c.oauth2Config.TokenSource(ctx, t).Token()
 	if err != nil {
 		return identity, fmt.Errorf("oidc: failed to get refresh token: %v", err)
@@ -284,6 +287,7 @@ func (c *oidcConnector) createIdentity(ctx context.Context, identity connector.I
 
 	// We immediately want to run getUserInfo if configured before we validate the claims
 	if c.getUserInfo {
+		defer func() { c.logger.Infof("userinfo for %s", identity.Email) }()
 		userInfo, err := c.provider.UserInfo(ctx, oauth2.StaticTokenSource(token))
 		if err != nil {
 			return identity, fmt.Errorf("oidc: error loading userinfo: %v", err)
