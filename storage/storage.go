@@ -19,6 +19,10 @@ var (
 
 	// ErrAlreadyExists is the error returned by storages if a resource ID is taken during a create.
 	ErrAlreadyExists = errors.New("ID already exists")
+
+	// ErrConflictingUpdate indicates the operation did not succeed because of
+	// concurrent modification and that it should be retried after delay
+	ErrConflictingUpdate = errors.New("concurrent conflicting update happened")
 )
 
 // Kubernetes only allows lower case letters for names.

@@ -3,7 +3,9 @@ package etcd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -532,34 +534,36 @@ func (c *conn) txnCreate(ctx context.Context, key string, value interface{}) err
 }
 
 func (c *conn) txnUpdate(ctx context.Context, key string, update func(current []byte) ([]byte, error)) error {
-	getResp, err := c.db.Get(ctx, key)
-	if err != nil {
-		return err
-	}
-	var currentValue []byte
-	var modRev int64
-	if len(getResp.Kvs) > 0 {
-		currentValue = getResp.Kvs[0].Value
-		modRev = getResp.Kvs[0].ModRevision
-	}
+	return retryOnConflict(ctx, func() error {
+		getResp, err := c.db.Get(ctx, key)
+		if err != nil {
+			return err
+		}
+		var currentValue []byte
+		var modRev int64
+		if len(getResp.Kvs) > 0 {
+			currentValue = getResp.Kvs[0].Value
+			modRev = getResp.Kvs[0].ModRevision
+		}
 
-	updatedValue, err := update(currentValue)
-	if err != nil {
-		return err
-	}
+		updatedValue, err := update(currentValue)
+		if err != nil {
+			return err
+		}
 
-	txn := c.db.Txn(ctx)
-	updateResp, err := txn.
-		If(clientv3.Compare(clientv3.ModRevision(key), "=", modRev)).
-		Then(clientv3.OpPut(key, string(updatedValue))).
-		Commit()
-	if err != nil {
-		return err
-	}
-	if !updateResp.Succeeded {
-		return fmt.Errorf("failed to update key=%q: concurrent conflicting update happened", key)
-	}
-	return nil
+		txn := c.db.Txn(ctx)
+		updateResp, err := txn.
+			If(clientv3.Compare(clientv3.ModRevision(key), "=", modRev)).
+			Then(clientv3.OpPut(key, string(updatedValue))).
+			Commit()
+		if err != nil {
+			return err
+		}
+		if !updateResp.Succeeded {
+			return fmt.Errorf("failed to update key=%q: %w", key, storage.ErrConflictingUpdate)
+		}
+		return nil
+	})
 }
 
 func keyID(prefix, id string) string       { return prefix + id }
@@ -643,4 +647,35 @@ func (c *conn) UpdateDeviceToken(deviceCode string, updater func(old storage.Dev
 		}
 		return json.Marshal(fromStorageDeviceToken(updated))
 	})
+}
+
+func retryOnConflict(ctx context.Context, action func() error) error {
+	policy := []int{10, 20, 100, 300, 600}
+
+	attempts := 0
+	getNextStep := func() time.Duration {
+		step := policy[attempts]
+		return time.Duration(step*5+rand.Intn(step)) * time.Microsecond
+	}
+
+	if err := action(); err == nil || !errors.Is(err, storage.ErrConflictingUpdate) {
+		return err
+	}
+
+	for {
+		select {
+		case <-time.After(getNextStep()):
+			err := action()
+			if err == nil || !errors.Is(err, storage.ErrConflictingUpdate) {
+				return err
+			}
+
+			attempts++
+			if attempts >= 4 {
+				return fmt.Errorf("maximum timeout reached while retrying a conflicted request: %w", err)
+			}
+		case <-ctx.Done():
+			return errors.New("canceled")
+		}
+	}
 }
