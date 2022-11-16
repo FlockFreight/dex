@@ -344,19 +344,33 @@ func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request, clie
 		return
 	}
 
-	newToken, ident, rerr := s.updateRefreshToken(r.Context(), rCtx)
-	if rerr != nil {
-		s.refreshTokenErrHelper(w, rerr)
-		return
+	claims := storage.Claims{
+		UserID:            rCtx.storageToken.Claims.UserID,
+		Username:          rCtx.storageToken.Claims.Username,
+		PreferredUsername: rCtx.storageToken.Claims.PreferredUsername,
+		Email:             rCtx.storageToken.Claims.Email,
+		EmailVerified:     rCtx.storageToken.Claims.EmailVerified,
+		Groups:            rCtx.storageToken.Claims.Groups,
 	}
 
-	claims := storage.Claims{
-		UserID:            ident.UserID,
-		Username:          ident.Username,
-		PreferredUsername: ident.PreferredUsername,
-		Email:             ident.Email,
-		EmailVerified:     ident.EmailVerified,
-		Groups:            ident.Groups,
+	// If rotation is disabled, don't update last used time if we are within
+	// reuse interval. This will make reuse interval work as a caching window for
+	// upstream claims. Claims will only be updated every reuse interval.
+	newToken := token
+	if s.refreshTokenPolicy.RotationEnabled() || !s.refreshTokenPolicy.AllowedToReuse(rCtx.storageToken.LastUsed) {
+		replaceToken, ident, rerr := s.updateRefreshToken(r.Context(), rCtx)
+		if rerr != nil {
+			s.refreshTokenErrHelper(w, rerr)
+			return
+		}
+		newToken = replaceToken
+		claims.UserID = ident.UserID
+		claims.UserID = ident.UserID
+		claims.Username = ident.Username
+		claims.PreferredUsername = ident.PreferredUsername
+		claims.Email = ident.Email
+		claims.EmailVerified = ident.EmailVerified
+		claims.Groups = ident.Groups
 	}
 
 	accessToken, err := s.newAccessToken(client.ID, claims, rCtx.scopes, rCtx.storageToken.Nonce, rCtx.storageToken.ConnectorID)
