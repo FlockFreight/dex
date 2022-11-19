@@ -31,6 +31,9 @@ const (
 
 	// defaultStorageTimeout will be applied to all storage's operations.
 	defaultStorageTimeout = 5 * time.Second
+	// Refresh updates can include external provider calls and so should have
+	// a larger timeout
+	defaultRefreshTimeout = defaultStorageTimeout * 10
 )
 
 type conn struct {
@@ -193,7 +196,7 @@ func (c *conn) GetRefresh(id string) (r storage.RefreshToken, err error) {
 func (c *conn) UpdateRefreshToken(id string, updater func(old storage.RefreshToken) (storage.RefreshToken, error)) error {
 	// This request can wrap an external call which takes much longer potentially
 	// than expected storage requests
-	ctx, cancel := context.WithTimeout(context.Background(), defaultStorageTimeout*10)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultRefreshTimeout)
 	defer cancel()
 	return c.txnUpdate(ctx, keyID(refreshTokenPrefix, id), func(currentValue []byte) ([]byte, error) {
 		var current RefreshToken
