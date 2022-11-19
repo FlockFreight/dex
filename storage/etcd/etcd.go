@@ -10,9 +10,11 @@ import (
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
 
 	"github.com/dexidp/dex/pkg/log"
 	"github.com/dexidp/dex/storage"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
@@ -29,6 +31,9 @@ const (
 
 	// defaultStorageTimeout will be applied to all storage's operations.
 	defaultStorageTimeout = 5 * time.Second
+	// Refresh updates can include external provider calls and so should have
+	// a larger timeout
+	defaultRefreshTimeout = defaultStorageTimeout * 10
 )
 
 type conn struct {
@@ -189,7 +194,9 @@ func (c *conn) GetRefresh(id string) (r storage.RefreshToken, err error) {
 }
 
 func (c *conn) UpdateRefreshToken(id string, updater func(old storage.RefreshToken) (storage.RefreshToken, error)) error {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultStorageTimeout)
+	// This request can wrap an external call which takes much longer potentially
+	// than expected storage requests
+	ctx, cancel := context.WithTimeout(context.Background(), defaultRefreshTimeout)
 	defer cancel()
 	return c.txnUpdate(ctx, keyID(refreshTokenPrefix, id), func(currentValue []byte) ([]byte, error) {
 		var current RefreshToken
@@ -535,6 +542,19 @@ func (c *conn) txnCreate(ctx context.Context, key string, value interface{}) err
 
 func (c *conn) txnUpdate(ctx context.Context, key string, update func(current []byte) ([]byte, error)) error {
 	return retryOnConflict(ctx, func() error {
+		session, err := concurrency.NewSession(c.db, concurrency.WithTTL(int(defaultStorageTimeout.Seconds()*1.1)))
+		if err != nil {
+			return err
+		}
+		defer session.Close()
+		mu := concurrency.NewMutex(session, key)
+		if err := mu.Lock(ctx); err != nil {
+			if errors.Is(err, concurrency.ErrSessionExpired) {
+				return storage.ErrConflictingUpdate
+			}
+			return err
+		}
+		defer mu.Unlock(ctx)
 		getResp, err := c.db.Get(ctx, key)
 		if err != nil {
 			return err
@@ -650,11 +670,11 @@ func (c *conn) UpdateDeviceToken(deviceCode string, updater func(old storage.Dev
 }
 
 func retryOnConflict(ctx context.Context, action func() error) error {
-	policy := []int{10, 20, 100, 300, 600}
+	policy := prometheus.ExponentialBucketsRange(10, 600, 5)
 
 	attempts := 0
 	getNextStep := func() time.Duration {
-		step := policy[attempts]
+		step := int(policy[attempts])
 		return time.Duration(step*5+rand.Intn(step)) * time.Microsecond
 	}
 
@@ -671,7 +691,7 @@ func retryOnConflict(ctx context.Context, action func() error) error {
 			}
 
 			attempts++
-			if attempts >= 4 {
+			if attempts >= len(policy) {
 				return fmt.Errorf("maximum timeout reached while retrying a conflicted request: %w", err)
 			}
 		case <-ctx.Done():
