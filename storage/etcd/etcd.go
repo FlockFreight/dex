@@ -539,14 +539,14 @@ func (c *conn) txnCreate(ctx context.Context, key string, value interface{}) err
 
 func (c *conn) txnUpdate(ctx context.Context, key string, update func(current []byte) ([]byte, error)) error {
 	return retryOnConflict(ctx, func() error {
-		session, err := concurrency.NewSession(c.db)
+		session, err := concurrency.NewSession(c.db, concurrency.WithTTL(int(defaultStorageTimeout.Seconds()*1.1)))
 		if err != nil {
 			return err
 		}
 		defer session.Close()
 		mu := concurrency.NewMutex(session, key)
-		if err := mu.TryLock(ctx); err != nil {
-			if errors.Is(err, concurrency.ErrLocked) {
+		if err := mu.Lock(ctx); err != nil {
+			if errors.Is(err, concurrency.ErrSessionExpired) {
 				return storage.ErrConflictingUpdate
 			}
 			return err
@@ -667,7 +667,7 @@ func (c *conn) UpdateDeviceToken(deviceCode string, updater func(old storage.Dev
 }
 
 func retryOnConflict(ctx context.Context, action func() error) error {
-	policy := prometheus.ExponentialBucketsRange(10, float64(defaultStorageTimeout.Microseconds()), 15)
+	policy := prometheus.ExponentialBucketsRange(10, 600, 5)
 
 	attempts := 0
 	getNextStep := func() time.Duration {
