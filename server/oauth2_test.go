@@ -534,6 +534,475 @@ func TestValidRedirectURI(t *testing.T) {
 			redirectURI: "http://localhost.localhost:8080/",
 			wantValid:   false,
 		},
+		{
+			client: storage.Client{
+				Public:       true,
+				RedirectURIs: []string{"http://foo.com/bar", "http://localhost"},
+			},
+			redirectURI: "http://localhost",
+			wantValid:   true,
+		},
+	}
+	for _, test := range tests {
+		got := validateRedirectURI(test.client, test.redirectURI)
+		if got != test.wantValid {
+			t.Errorf("client=%#v, redirectURI=%q, wanted valid=%t, got=%t",
+				test.client, test.redirectURI, test.wantValid, got)
+		}
+	}
+}
+
+func TestValidWildcardRedirectURI(t *testing.T) {
+	tests := []struct {
+		client      storage.Client
+		redirectURI string
+		wantValid   bool
+	}{
+		// Protocol 'http' is not supported for wildcard redirect URIs.
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"http://*.foo.com/bar"},
+			},
+			redirectURI: "http://baz.foo.com/bar",
+			wantValid:   false,
+		},
+		// There must be at least 1 subdomain between the top level domain and the wildcarded subdomain.
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*/bar"},
+			},
+			redirectURI: "https://bad.example.com/bar",
+			wantValid:   false,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*.com/bar"},
+			},
+			redirectURI: "https://bad.example.com/bar",
+			wantValid:   false,
+		},
+		// Only a single wildcard character is supported, and it must be in the lowest level domain.
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*a*.example.com/bar"},
+			},
+			redirectURI: "https://bad.example.com/bar",
+			wantValid:   false,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://b*.ex*le.com/bar"},
+			},
+			redirectURI: "https://bad.example.com/bar",
+			wantValid:   false,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://bad.*.com/bar"},
+			},
+			redirectURI: "https://bad.example.com/bar",
+			wantValid:   false,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*.example.com/bar"},
+			},
+			redirectURI: "https://good.example.com/bar",
+			wantValid:   true,
+		},
+		// Wildcard cannot span more than one domain.
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://redirect-*-domain.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://redirect-1-domain.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://redirect-*-domain.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://redirect-sub-domain.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://redirect-*-domain.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://redirect-1.sub-domain.example.com/oidc/redirect",
+			wantValid:   false,
+		},
+		// The scheme of a candidate redirectURI must be https
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*.example.com:3000/oidc/redirect"},
+			},
+			redirectURI: "http://good.example.com:4000/oidc/redirect",
+			wantValid:   false,
+		},
+		// When ports are specified, they must match
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*.example.com:3000/oidc/redirect"},
+			},
+			redirectURI: "https://domain.example.com:4000/oidc/redirect",
+			wantValid:   false,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*.example.com:3000/oidc/redirect"},
+			},
+			redirectURI: "https://domain.example.com:3000/oidc/redirect",
+			wantValid:   true,
+		},
+		// Wildcards are not supported for ports
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*.example.com:*/oidc/redirect"},
+			},
+			redirectURI: "https://domain.example.com:4000/oidc/redirect",
+			wantValid:   false,
+		},
+		// The paths must match exactly
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://domain.example.com/sso/redirect",
+			wantValid:   false,
+		},
+		// Query parameters are ignored
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*.example.com/oidc/redirect?foo=bar"},
+			},
+			redirectURI: "https://domain.example.com/oidc/redirect?foo=bar",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*.example.com/oidc/redirect?foo=bar"},
+			},
+			redirectURI: "https://domain.example.com/oidc/redirect?foo=baz",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*.example.com/oidc/redirect?foo=bar"},
+			},
+			redirectURI: "https://domain.example.com/oidc/redirect?baz=bat",
+			wantValid:   true,
+		},
+		// Wildcard tests
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://a*a.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://a.example.com/oidc/redirect",
+			wantValid:   false,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://a*a.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://aa.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://a*a.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://ala.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://a*a.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://abba.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*a.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://a.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*a.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://aa.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*a.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://abba.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://*a.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://abc.example.com/oidc/redirect",
+			wantValid:   false,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://a*.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://a.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://a*.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://aa.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://a*.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://abc.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{"https://a*.example.com/oidc/redirect"},
+			},
+			redirectURI: "https://cbd.example.com/oidc/redirect",
+			wantValid:   false,
+		},
+		// Wildcards can be mixed with regular redirectURIs
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					"http://localhost:8080/oidc/redirect",
+					"https://foo.bar.com/baz/redirect",
+					"https://*.example.com/oidc/redirect",
+				},
+			},
+			redirectURI: "https://not.valid.com/some/redirect",
+			wantValid:   false,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					"http://localhost:8080/oidc/redirect",
+					"https://foo.bar.com/baz/redirect",
+					"https://*.example.com/oidc/redirect",
+				},
+			},
+			redirectURI: "http://localhost:8080/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					"http://localhost:8080/oidc/redirect",
+					"https://foo.bar.com/baz/redirect",
+					"https://*.example.com/oidc/redirect",
+				},
+			},
+			redirectURI: "https://foo.bar.com/baz/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					"http://localhost:8080/oidc/redirect",
+					"https://foo.bar.com/baz/redirect",
+					"https://*.example.com/oidc/redirect",
+				},
+			},
+			redirectURI: "https://good.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					"http://localhost:8080/oidc/redirect",
+					"https://foo.bar.com/baz/redirect",
+					"https://*.example.com/oidc/redirect",
+				},
+			},
+			redirectURI: "https://bad.example.com/someother/redirect",
+			wantValid:   false,
+		},
+		// Ordering within the list of redirectURIs does not matter
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					"https://*.example.com/oidc/redirect",
+					"http://localhost:8080/oidc/redirect",
+					"https://foo.bar.com/baz/redirect",
+				},
+			},
+			redirectURI: "https://not.valid.com/some/redirect",
+			wantValid:   false,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					"https://*.example.com/oidc/redirect",
+					"http://localhost:8080/oidc/redirect",
+					"https://foo.bar.com/baz/redirect",
+				},
+			},
+			redirectURI: "http://localhost:8080/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					"https://*.example.com/oidc/redirect",
+					"http://localhost:8080/oidc/redirect",
+					"https://foo.bar.com/baz/redirect",
+				},
+			},
+			redirectURI: "https://foo.bar.com/baz/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					"https://*.example.com/oidc/redirect",
+					"http://localhost:8080/oidc/redirect",
+					"https://foo.bar.com/baz/redirect",
+				},
+			},
+			redirectURI: "https://good.example.com/oidc/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					"https://*.example.com/oidc/redirect",
+					"http://localhost:8080/oidc/redirect",
+					"https://foo.bar.com/baz/redirect",
+				},
+			},
+			redirectURI: "https://bad.example.com/someother/redirect",
+			wantValid:   false,
+		},
+		// DO NOT COMMIT - Flock Freight Specific Tests
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					// local
+					"http://api:3000/sso/redirect",
+					"http://localhost:3000/sso/redirect",
+					"http://127.0.0.1:3000/sso/redirect",
+					// multi
+					"https://app-*.auptix.net/sso/redirect",
+					// staging
+					"https://app.staging.flockfreight.com/sso/redirect",
+				},
+			},
+			redirectURI: "http://api:3000/sso/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					// local
+					"http://api:3000/sso/redirect",
+					"http://localhost:3000/sso/redirect",
+					"http://127.0.0.1:3000/sso/redirect",
+					// multi
+					"https://app-*.auptix.net/sso/redirect",
+					// staging
+					"https://app.staging.flockfreight.com/sso/redirect",
+				},
+			},
+			redirectURI: "http://localhost:3000/sso/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					// local
+					"http://api:3000/sso/redirect",
+					"http://localhost:3000/sso/redirect",
+					"http://127.0.0.1:3000/sso/redirect",
+					// multi
+					"https://app-*.auptix.net/sso/redirect",
+					// staging
+					"https://app.staging.flockfreight.com/sso/redirect",
+				},
+			},
+			redirectURI: "http://127.0.0.1:3000/sso/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					// local
+					"http://api:3000/sso/redirect",
+					"http://localhost:3000/sso/redirect",
+					"http://127.0.0.1:3000/sso/redirect",
+					// multi
+					"https://app-*.auptix.net/sso/redirect",
+					// staging
+					"https://app.staging.flockfreight.com/sso/redirect",
+				},
+			},
+			redirectURI: "https://app-develop.auptix.net/sso/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					// local
+					"http://api:3000/sso/redirect",
+					"http://localhost:3000/sso/redirect",
+					"http://127.0.0.1:3000/sso/redirect",
+					// multi
+					"https://app-*.auptix.net/sso/redirect",
+					// staging
+					"https://app.staging.flockfreight.com/sso/redirect",
+				},
+			},
+			redirectURI: "https://app-edi-test.auptix.net/sso/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					// local
+					"http://api:3000/sso/redirect",
+					"http://localhost:3000/sso/redirect",
+					"http://127.0.0.1:3000/sso/redirect",
+					// multi
+					"https://app-*.auptix.net/sso/redirect",
+					// staging
+					"https://app.staging.flockfreight.com/sso/redirect",
+				},
+			},
+			redirectURI: "https://app-ax-12345.auptix.net/sso/redirect",
+			wantValid:   true,
+		},
+		{
+			client: storage.Client{
+				RedirectURIs: []string{
+					// local
+					"http://api:3000/sso/redirect",
+					"http://localhost:3000/sso/redirect",
+					"http://127.0.0.1:3000/sso/redirect",
+					// multi
+					"https://app-*.auptix.net/sso/redirect",
+					// staging
+					"https://app.staging.flockfreight.com/sso/redirect",
+				},
+			},
+			redirectURI: "https://app.staging.flockfreight.com/sso/redirect",
+			wantValid:   true,
+		},
 	}
 	for _, test := range tests {
 		got := validateRedirectURI(test.client, test.redirectURI)

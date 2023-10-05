@@ -625,7 +625,7 @@ func validateRedirectURI(client storage.Client, redirectURI string) bool {
 	// Allow named RedirectURIs for both public and non-public clients.
 	// This is required make PKCE-enabled web apps work, when configured as public clients.
 	for _, uri := range client.RedirectURIs {
-		if redirectURI == uri {
+		if redirectURI == uri || isWildcardRedirectURIMatch(uri, redirectURI) {
 			return true
 		}
 	}
@@ -652,6 +652,70 @@ func validateRedirectURI(client storage.Client, redirectURI string) bool {
 	}
 	host, _, err := net.SplitHostPort(u.Host)
 	return err == nil && host == "localhost"
+}
+
+func isWildcardRedirectURIMatch(wildcardURI, redirectURI string) bool {
+	parsedWildcardURI, err := url.Parse(wildcardURI)
+	if err != nil {
+		return false
+	}
+
+	// Wildcard URIs must be https
+	if parsedWildcardURI.Scheme != "https" {
+		return false
+	}
+
+	// Wildcard URIs only apply to URIs with subdomains
+	wildcardDomains := strings.Split(parsedWildcardURI.Hostname(), ".")
+	if len(wildcardDomains) < 3 {
+		return false
+	}
+
+	// Wildcard URIs may only contain a single '*' and it must be in the lowest level domain
+	if strings.Count(wildcardURI, "*") != 1 {
+		return false
+	}
+	if !strings.Contains(wildcardDomains[0], "*") {
+		return false
+	}
+
+	parsedRedirectURI, err := url.Parse(redirectURI)
+	if err != nil {
+		return false
+	}
+	redirectDomains := strings.Split(parsedRedirectURI.Hostname(), ".")
+
+	return parsedRedirectURI.Scheme == "https" &&
+		wildcardMatch(wildcardDomains[0], redirectDomains[0]) &&
+		strings.Join(wildcardDomains[1:], ".") == strings.Join(redirectDomains[1:], ".") &&
+		parsedWildcardURI.Port() == parsedRedirectURI.Port() &&
+		parsedWildcardURI.Path == parsedRedirectURI.Path
+}
+
+func wildcardMatch(pattern, str string) bool {
+	if pattern == "*" {
+		return true
+	}
+	// Pattern starts with "*" so str must end with the last part of the pattern
+	if strings.HasPrefix(pattern, "*") {
+		return strings.HasSuffix(str, pattern[1:])
+	}
+
+	// Pattern ends with "*" so str must start with the first part of the pattern
+	if strings.HasSuffix(pattern, "*") {
+		return strings.HasPrefix(str, pattern[:len(pattern)-1])
+	}
+
+	parts := strings.Split(pattern, "*")
+
+	// Pattern doesn't contain "*", just do a simple equality check
+	if len(parts) == 1 {
+		return str == pattern
+	}
+
+	// Pattern contains "*" in the middle, so str must start with the first part and end with the last part
+	return strings.HasSuffix(str, parts[1]) &&
+		strings.HasPrefix(str[:strings.LastIndex(str, parts[1])], parts[0])
 }
 
 func validateConnectorID(connectors []storage.Connector, connectorID string) bool {
