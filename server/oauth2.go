@@ -93,7 +93,6 @@ func tokenErr(w http.ResponseWriter, typ, description string, statusCode int) er
 	return nil
 }
 
-// nolint
 const (
 	errInvalidRequest          = "invalid_request"
 	errUnauthorizedClient      = "unauthorized_client"
@@ -132,12 +131,27 @@ const (
 	grantTypeImplicit          = "implicit"
 	grantTypePassword          = "password"
 	grantTypeDeviceCode        = "urn:ietf:params:oauth:grant-type:device_code"
+	grantTypeTokenExchange     = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
 const (
-	responseTypeCode    = "code"     // "Regular" flow
-	responseTypeToken   = "token"    // Implicit flow for frontend apps.
-	responseTypeIDToken = "id_token" // ID Token in url fragment
+	// https://www.rfc-editor.org/rfc/rfc8693.html#section-3
+	tokenTypeAccess  = "urn:ietf:params:oauth:token-type:access_token"
+	tokenTypeRefresh = "urn:ietf:params:oauth:token-type:refresh_token"
+	tokenTypeID      = "urn:ietf:params:oauth:token-type:id_token"
+	tokenTypeSAML1   = "urn:ietf:params:oauth:token-type:saml1"
+	tokenTypeSAML2   = "urn:ietf:params:oauth:token-type:saml2"
+	tokenTypeJWT     = "urn:ietf:params:oauth:token-type:jwt"
+)
+
+const (
+	responseTypeCode             = "code"                // "Regular" flow
+	responseTypeToken            = "token"               // Implicit flow for frontend apps.
+	responseTypeIDToken          = "id_token"            // ID Token in url fragment
+	responseTypeCodeToken        = "code token"          // "Regular" flow + Implicit flow
+	responseTypeCodeIDToken      = "code id_token"       // "Regular" flow + ID Token
+	responseTypeIDTokenToken     = "id_token token"      // ID Token + Implicit flow
+	responseTypeCodeIDTokenToken = "code id_token token" // "Regular" flow + ID Token + Implicit flow
 )
 
 const (
@@ -211,9 +225,9 @@ func signPayload(key *jose.JSONWebKey, alg jose.SignatureAlgorithm, payload []by
 // The hash algorithm for the at_hash is determined by the signing
 // algorithm used for the id_token. From the spec:
 //
-//    ...the hash algorithm used is the hash algorithm used in the alg Header
-//    Parameter of the ID Token's JOSE Header. For instance, if the alg is RS256,
-//    hash the access_token value with SHA-256
+//	...the hash algorithm used is the hash algorithm used in the alg Header
+//	Parameter of the ID Token's JOSE Header. For instance, if the alg is RS256,
+//	hash the access_token value with SHA-256
 //
 // https://openid.net/specs/openid-connect-core-1_0.html#ImplicitIDToken
 var hashForSigAlg = map[jose.SignatureAlgorithm]func() hash.Hash{
@@ -288,9 +302,8 @@ type federatedIDClaims struct {
 	UserID      string `json:"user_id,omitempty"`
 }
 
-func (s *Server) newAccessToken(clientID string, claims storage.Claims, scopes []string, nonce, connID string) (accessToken string, err error) {
-	idToken, _, err := s.newIDToken(clientID, claims, scopes, nonce, storage.NewID(), "", connID)
-	return idToken, err
+func (s *Server) newAccessToken(clientID string, claims storage.Claims, scopes []string, nonce, connID string) (accessToken string, expiry time.Time, err error) {
+	return s.newIDToken(clientID, claims, scopes, nonce, storage.NewID(), "", connID)
 }
 
 func (s *Server) newIDToken(clientID string, claims storage.Claims, scopes []string, nonce, accessToken, code, connID string) (idToken string, expiry time.Time, err error) {
@@ -612,7 +625,7 @@ func validateRedirectURI(client storage.Client, redirectURI string) bool {
 	// Allow named RedirectURIs for both public and non-public clients.
 	// This is required make PKCE-enabled web apps work, when configured as public clients.
 	for _, uri := range client.RedirectURIs {
-		if redirectURI == uri {
+		if redirectURI == uri || isWildcardRedirectURIMatch(uri, redirectURI) {
 			return true
 		}
 	}
@@ -639,6 +652,70 @@ func validateRedirectURI(client storage.Client, redirectURI string) bool {
 	}
 	host, _, err := net.SplitHostPort(u.Host)
 	return err == nil && host == "localhost"
+}
+
+func isWildcardRedirectURIMatch(wildcardURI, redirectURI string) bool {
+	parsedWildcardURI, err := url.Parse(wildcardURI)
+	if err != nil {
+		return false
+	}
+
+	// Wildcard URIs must be https
+	if parsedWildcardURI.Scheme != "https" {
+		return false
+	}
+
+	// Wildcard URIs only apply to URIs with subdomains
+	wildcardDomains := strings.Split(parsedWildcardURI.Hostname(), ".")
+	if len(wildcardDomains) < 3 {
+		return false
+	}
+
+	// Wildcard URIs may only contain a single '*' and it must be in the lowest level domain
+	if strings.Count(wildcardURI, "*") != 1 {
+		return false
+	}
+	if !strings.Contains(wildcardDomains[0], "*") {
+		return false
+	}
+
+	parsedRedirectURI, err := url.Parse(redirectURI)
+	if err != nil {
+		return false
+	}
+	redirectDomains := strings.Split(parsedRedirectURI.Hostname(), ".")
+
+	return parsedRedirectURI.Scheme == "https" &&
+		wildcardMatch(wildcardDomains[0], redirectDomains[0]) &&
+		strings.Join(wildcardDomains[1:], ".") == strings.Join(redirectDomains[1:], ".") &&
+		parsedWildcardURI.Port() == parsedRedirectURI.Port() &&
+		parsedWildcardURI.Path == parsedRedirectURI.Path
+}
+
+func wildcardMatch(pattern, str string) bool {
+	if pattern == "*" {
+		return true
+	}
+	// Pattern starts with "*" so str must end with the last part of the pattern
+	if strings.HasPrefix(pattern, "*") {
+		return strings.HasSuffix(str, pattern[1:])
+	}
+
+	// Pattern ends with "*" so str must start with the first part of the pattern
+	if strings.HasSuffix(pattern, "*") {
+		return strings.HasPrefix(str, pattern[:len(pattern)-1])
+	}
+
+	parts := strings.Split(pattern, "*")
+
+	// Pattern doesn't contain "*", just do a simple equality check
+	if len(parts) == 1 {
+		return str == pattern
+	}
+
+	// Pattern contains "*" in the middle, so str must start with the first part and end with the last part
+	return strings.HasSuffix(str, parts[1]) &&
+		strings.HasPrefix(str[:strings.LastIndex(str, parts[1])], parts[0])
 }
 
 func validateConnectorID(connectors []storage.Connector, connectorID string) bool {
