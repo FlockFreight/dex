@@ -390,7 +390,7 @@ func (c *oidcConnector) HandleCallback(s connector.Scopes, r *http.Request) (ide
 
 	ctx := context.WithValue(r.Context(), oauth2.HTTPClient, c.httpClient)
 
-	defer func() { c.logger.Infof("exchanging code for %s", identity.Email) }()
+	defer func() { c.logger.Info(fmt.Sprintf("exchanging code for %s", identity.Email)) }()
 	token, err := c.oauth2Config.Exchange(ctx, q.Get("code"))
 	if err != nil {
 		return identity, fmt.Errorf("oidc: failed to get token: %v", err)
